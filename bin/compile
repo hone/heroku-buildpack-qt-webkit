@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# bin/compile <build-dir> <cache-dir> <env-dir>
+
+# fail fast
+set -e
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+BP_DIR=`cd $(dirname $0); cd ..; pwd`
+QT_BIN_DIR=".apt/usr/lib/x86_64-linux-gnu/qt5/bin"
+
+function error() {
+	echo " !     $*" >&2
+	exit 1
+}
+
+function topic() {
+	echo "-----> $*"
+}
+
+install_system_deps() {
+	topic "Installing QT/Webkit System Dependencies"
+
+	APT_BUILDPACK="https://github.com/heroku/heroku-buildpack-apt"
+	local buildpack_tmpdir=$(mktemp -d)
+	cd $buildpack_tmpdir && git clone $APT_BUILDPACK .
+
+	local build_tmpdir=$(mktemp -d)
+	mkdir -p $build_tmpdir
+	cat << EOF >$build_tmpdir/Aptfile
+qtdeclarative5-dev
+libqt5webkit5-dev
+libgl1-mesa-dev
+libgl1-mesa-glx
+xvfb
+EOF
+
+	local cache_tmpdir=$(mktemp -d)
+
+	HOME=/app $buildpack_tmpdir/bin/compile $build_tmpdir $cache_tmpdir
+	if [ $? -ne 0 ]; then
+		rm -rf $buildpack_tmpdir $build_tmpdir $cache_tmpdir
+		error "Could not install dependencies"
+	fi
+	mv $build_tmpdir/.apt $BUILD_DIR
+	# mv file in case user is using .profile.d
+	mkdir -p $BUILD_DIR/.profile.d/
+	mv $build_tmpdir/.profile.d/000_apt.sh $BUILD_DIR/.profile.d/
+
+	rm -rf $buildpack_tmpdir $build_tmpdir $cache_tmpdir
+}
+
+configure_qt() {
+	topic "Configuring QT, writing qt.conf"
+
+	cat << EOF >$BUILD_DIR/$QT_BIN_DIR/qt.conf
+[Paths]
+Prefix=/app/.apt/usr/lib/x86_64-linux-gnu/qt5/
+Headers=/app/.apt/usr/include/qt5/
+EOF
+}
+
+configure_export_env() {
+	topic "Setting up environment"
+
+	source $BUILD_DIR/.profile.d/000_apt.sh
+	export PATH=$BUILD_DIR/$QT_BIN_DIR:$PATH
+	# point to where the qt platform plugins exist
+	export QT_QPA_PLATFORM_PLUGIN_PATH=$HOME/.apt/usr/lib/x86_64-linux-gnu/qt5/plugins/
+	export | grep -E -e ' (PATH|QT_QPA_PLATFORM_PLUGIN_PATH|LD_LIBRARY_PATH|LIBRARY_PATH|INCLUDE_PATH|CPATH|CPPPATH|PKG_CONFIG_PATH)=' >> "$BP_DIR/export"
+
+	cat << EOF >$BUILD_DIR/.profile.d/001_qt.sh
+export PATH="\$HOME/$QT_BIN_DIR:\$PATH"
+export QT_QPA_PLATFORM_PLUGIN_PATH=\$HOME/.apt/usr/lib/x86_64-linux-gnu/qt5/plugins/
+EOF
+}
+
+install_system_deps
+configure_qt
+configure_export_env
